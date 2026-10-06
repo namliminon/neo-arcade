@@ -73,7 +73,7 @@ const CATEGORY_TABS = [
   { id: "avatar", label: "Khung Avatar" },
 ];
 
-export function ShopPage() {
+export default function ShopPage() {
   const { user, coins, refreshUser, openAuthModal } = useAuth();
   const [selectedCat, setSelectedCat] = useState("all");
   const [ownedItemIds, setOwnedItemIds] = useState<string[]>([]);
@@ -166,5 +166,3 @@ export function ShopPage() {
     </div>
   );
 }
-
-export default ShopPage;

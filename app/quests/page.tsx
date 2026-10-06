@@ -72,7 +72,7 @@ const BADGES = [
   { name: "Bất Bại Đối Kháng", icon: "🔥", desc: "Thắng 10 trận 2 người online", unlocked: false },
 ];
 
-export function QuestsPage() {
+export default function QuestsPage() {
   const { user, addCoins, level } = useAuth();
   const [quests, setQuests] = useState<QuestItem[]>(INITIAL_QUESTS);
 
@@ -162,5 +162,3 @@ export function QuestsPage() {
     </div>
   );
 }
-
-export default QuestsPage;

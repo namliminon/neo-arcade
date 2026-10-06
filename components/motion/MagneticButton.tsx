@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useRef, useState, MouseEvent } from "react";
-import { motion } from "framer-motion";
+import { motion, HTMLMotionProps } from "framer-motion";
 import { soundSynth } from "@/lib/audio/sound-synth";
 
-interface MagneticButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+interface MagneticButtonProps extends HTMLMotionProps<"button"> {
   children: React.ReactNode;
   className?: string;
   strength?: number;
