@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthProvider } from "@/lib/store/auth-context";
 
 export const metadata: Metadata = {
   title: "Neo-Arcade | Modern Global Web Gaming Hub",
@@ -14,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="vi" className="dark">
       <body className="antialiased min-h-screen selection:bg-cyan-500/30 selection:text-cyan-200">
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
