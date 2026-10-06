@@ -4,7 +4,8 @@ import React, { useState, useEffect } from "react";
 import { dataAdapter, ScoreRecord } from "@/lib/store/data-adapter";
 import { AnimatedTabs } from "@/components/motion/AnimatedTabs";
 import { BorderBeam } from "@/components/motion/BorderBeam";
-import { Trophy, Medal, Crown, Flame, Gamepad2 } from "lucide-react";
+import { Trophy, Medal, Crown, Flame, Gamepad2, Lock, ShieldCheck, Sparkles } from "lucide-react";
+import { useAuth } from "@/lib/store/auth-context";
 
 const GAME_TABS = [
   { id: "all", label: "Tất Cả Game" },
@@ -15,6 +16,7 @@ const GAME_TABS = [
 ];
 
 export function LeaderboardTable({ initialGame = "all" }: { initialGame?: string }) {
+  const { user, openAuthModal } = useAuth();
   const [selectedGame, setSelectedGame] = useState(initialGame);
   const [scores, setScores] = useState<ScoreRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +43,46 @@ export function LeaderboardTable({ initialGame = "all" }: { initialGame?: string
           activeTab={selectedGame}
           onChange={setSelectedGame}
         />
+      </div>
+
+      {/* Auth Rule Notice Banner */}
+      <div className="max-w-3xl mx-auto w-full">
+        {user ? (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-2xl border border-emerald-500/25 bg-emerald-950/20 backdrop-blur-md">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <ShieldCheck className="h-4 w-4" />
+              </div>
+              <div className="text-xs text-zinc-300">
+                Bạn đang chơi với nickname:{" "}
+                <span className="font-bold text-emerald-400">@{user.nickname || user.username}</span>.
+                Mọi kỷ lục đạt được sẽ tự động vinh danh bạn trên Bảng Xếp Hạng!
+              </div>
+            </div>
+            <div className="text-[11px] font-mono text-emerald-400/80 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 whitespace-nowrap">
+              Đã xác thực ✓
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-2xl border border-amber-500/25 bg-amber-950/20 backdrop-blur-md">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                <Lock className="h-4 w-4" />
+              </div>
+              <div className="text-xs text-zinc-300">
+                <span className="font-bold text-amber-300">Cơ chế ghi danh:</span> Chỉ người chơi đã đăng nhập tài khoản mới được lưu điểm lên Bảng Xếp Hạng.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => openAuthModal("register")}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-black bg-gradient-to-r from-amber-400 to-amber-500 px-3.5 py-1.5 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.3)] hover:opacity-95 transition-all whitespace-nowrap cursor-pointer"
+            >
+              <Sparkles className="h-3.5 w-3.5 fill-black" />
+              Đăng Ký Nickname Để Leo Top
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Top 3 Podium */}

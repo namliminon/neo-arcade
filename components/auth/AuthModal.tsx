@@ -133,18 +133,25 @@ export function AuthModal() {
         <form onSubmit={handleSubmit} className="space-y-3.5">
           {mode === "register" && (
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Tên người dùng</label>
+              <label className="block text-xs font-semibold text-cyan-300 mb-1 flex items-center gap-1.5">
+                <User className="h-3.5 w-3.5" />
+                Nickname / Tên Hiển Thị (Hiện trên Bảng Xếp Hạng)
+              </label>
               <div className="relative">
                 <User className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
                 <input
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Ví dụ: ArcadeKing"
+                  placeholder="Ví dụ: ShadowNinja_VN, DragonMaster..."
                   required
+                  maxLength={24}
                   className="w-full rounded-xl border border-white/[0.08] bg-black/50 pl-9 pr-3 py-2 text-sm text-white placeholder-zinc-600 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
                 />
               </div>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                ⭐ Nickname này sẽ đại diện cho bạn khi tranh Top 1 trên Bảng Xếp Hạng!
+              </p>
             </div>
           )}
 

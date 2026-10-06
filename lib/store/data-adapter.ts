@@ -3,6 +3,7 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 export interface UserProfile {
   id: string;
   username: string;
+  nickname?: string;
   email: string;
   avatar_url: string;
   role: 'user' | 'admin';
@@ -173,6 +174,50 @@ class DataAdapter {
     this.saveToStorage();
   }
 
+  // Fetch / Sync profile from active Supabase session
+  public async fetchCurrentProfile(): Promise<UserProfile | null> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.user) {
+          // If no Supabase session, clear unless running pure mock
+          this.currentMockUser = null;
+          this.saveToStorage();
+          return null;
+        }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+
+        if (profile) {
+          const userProfile: UserProfile = {
+            id: profile.id,
+            username: profile.username || session.user.user_metadata?.username || session.user.email?.split('@')[0],
+            nickname: profile.username || session.user.user_metadata?.nickname || session.user.user_metadata?.username || session.user.email?.split('@')[0],
+            email: profile.email || session.user.email || '',
+            avatar_url: profile.avatar_url || '',
+            role: profile.role || 'user',
+            is_banned: profile.is_banned || false,
+            ban_reason: profile.ban_reason || '',
+            coins: profile.coins ?? 100,
+            exp: profile.exp ?? 0,
+            level: profile.level ?? 1,
+            created_at: profile.created_at || new Date().toISOString(),
+          };
+          this.currentMockUser = userProfile;
+          this.saveToStorage();
+          return userProfile;
+        }
+      } catch (err) {
+        console.error('Error fetching Supabase profile:', err);
+      }
+    }
+    return this.currentMockUser;
+  }
+
   // Auth Operations
   public async login(email: string, pass: string): Promise<AuthResponse> {
     const trimmedEmail = email.trim().toLowerCase();
@@ -194,6 +239,8 @@ class DataAdapter {
 
         if (profile?.is_banned) {
           await supabase.auth.signOut();
+          this.currentMockUser = null;
+          this.saveToStorage();
           return {
             error: `Tài khoản của bạn đã bị khóa. Lý do: ${profile.ban_reason || 'Vi phạm điều khoản'}`,
             banReason: profile.ban_reason,
@@ -202,7 +249,8 @@ class DataAdapter {
 
         const userProfile: UserProfile = {
           id: profile?.id || data.user.id,
-          username: profile?.username || trimmedEmail.split('@')[0],
+          username: profile?.username || data.user.user_metadata?.username || trimmedEmail.split('@')[0],
+          nickname: profile?.username || data.user.user_metadata?.nickname || data.user.user_metadata?.username || trimmedEmail.split('@')[0],
           email: trimmedEmail,
           avatar_url: profile?.avatar_url || '',
           role: profile?.role || 'user',
@@ -212,6 +260,9 @@ class DataAdapter {
           level: profile?.level ?? 1,
           created_at: profile?.created_at || new Date().toISOString(),
         };
+
+        this.currentMockUser = userProfile;
+        this.saveToStorage();
         return { user: userProfile };
       } catch (err: unknown) {
         return { error: (err as Error).message };
@@ -251,17 +302,30 @@ class DataAdapter {
           email: cleanEmail,
           password: pass,
           options: {
-            data: { username: cleanUser },
+            data: { username: cleanUser, nickname: cleanUser },
           },
         });
         if (error) return { error: error.message };
         if (!data.user) return { error: 'Không thể tạo tài khoản.' };
 
-        const newProfile: UserProfile = {
+        // Attempt to create profile record if trigger isn't executed
+        await supabase.from('profiles').upsert({
           id: data.user.id,
           username: cleanUser,
           email: cleanEmail,
-          avatar_url: '',
+          role: 'user',
+          coins: 100,
+          exp: 0,
+          level: 1,
+          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUser}`,
+        });
+
+        const newProfile: UserProfile = {
+          id: data.user.id,
+          username: cleanUser,
+          nickname: cleanUser,
+          email: cleanEmail,
+          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUser}`,
           role: 'user',
           is_banned: false,
           coins: 100,
@@ -269,6 +333,9 @@ class DataAdapter {
           level: 1,
           created_at: new Date().toISOString(),
         };
+
+        this.currentMockUser = newProfile;
+        this.saveToStorage();
         return { user: newProfile };
       } catch (err: unknown) {
         return { error: (err as Error).message };
@@ -280,12 +347,13 @@ class DataAdapter {
       return { error: 'Email này đã được sử dụng.' };
     }
     if (this.mockUsers.some((u) => u.username.toLowerCase() === cleanUser.toLowerCase())) {
-      return { error: 'Tên người dùng này đã tồn tại.' };
+      return { error: 'Nickname này đã được sử dụng, vui lòng chọn nickname khác.' };
     }
 
     const newUser: UserProfile = {
       id: `mock-user-${Date.now()}`,
       username: cleanUser,
+      nickname: cleanUser,
       email: cleanEmail,
       avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUser}`,
       role: 'user',
@@ -350,34 +418,48 @@ class DataAdapter {
     return this.mockUsers[idx];
   }
 
-  // Scores & Leaderboards
-  public async submitScore(userId: string, username: string, gameType: 'snake' | 'flappy' | 'rps' | 'tictactoe', score: number): Promise<void> {
+  // Scores & Leaderboards - ONLY ALLOW AUTHENTICATED USERS
+  public async submitScore(userId: string, username: string, gameType: 'snake' | 'flappy' | 'rps' | 'tictactoe', score: number): Promise<boolean> {
+    if (!userId || !userId.trim()) {
+      return false; // Reject anonymous submissions
+    }
+
     const record: ScoreRecord = {
       id: `score-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       user_id: userId,
-      username,
+      username: username || 'Player',
       game_type: gameType,
       score,
       created_at: new Date().toISOString(),
     };
 
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('scores').insert(record);
-      return;
+      try {
+        await supabase.from('scores').insert(record);
+        return true;
+      } catch (err) {
+        console.error('Error submitting score to Supabase:', err);
+        return false;
+      }
     }
 
     this.mockScores.push(record);
     this.saveToStorage();
+    return true;
   }
 
   public async getLeaderboard(gameType?: 'snake' | 'flappy' | 'rps' | 'tictactoe'): Promise<ScoreRecord[]> {
     if (isSupabaseConfigured && supabase) {
-      let query = supabase.from('scores').select('*').order('score', { ascending: false }).limit(20);
-      if (gameType) {
-        query = query.eq('game_type', gameType);
+      try {
+        let query = supabase.from('scores').select('*').order('score', { ascending: false }).limit(20);
+        if (gameType) {
+          query = query.eq('game_type', gameType);
+        }
+        const { data } = await query;
+        if (data) return data as ScoreRecord[];
+      } catch (err) {
+        console.error('Error fetching leaderboard from Supabase:', err);
       }
-      const { data } = await query;
-      if (data) return data as ScoreRecord[];
     }
 
     let list = [...this.mockScores];
@@ -389,8 +471,51 @@ class DataAdapter {
 
   // Coins & Leveling
   public async addCoins(userId: string, amount: number): Promise<number> {
+    if (!userId) return 0;
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('coins, exp, level')
+          .eq('id', userId)
+          .single();
+
+        if (profile) {
+          const newCoins = Math.max(0, (profile.coins || 0) + amount);
+          const newExp = (profile.exp || 0) + Math.abs(amount) * 2;
+          const newLevel = Math.floor(newExp / 250) + 1;
+
+          await supabase
+            .from('profiles')
+            .update({ coins: newCoins, exp: newExp, level: newLevel })
+            .eq('id', userId);
+
+          if (this.currentMockUser && this.currentMockUser.id === userId) {
+            this.currentMockUser.coins = newCoins;
+            this.currentMockUser.exp = newExp;
+            this.currentMockUser.level = newLevel;
+            this.saveToStorage();
+          }
+          return newCoins;
+        }
+      } catch (err) {
+        console.error('Error updating coins in Supabase:', err);
+      }
+    }
+
     const user = this.mockUsers.find((u) => u.id === userId);
-    if (!user) return 0;
+    if (!user) {
+      if (this.currentMockUser && this.currentMockUser.id === userId) {
+        this.currentMockUser.coins = Math.max(0, this.currentMockUser.coins + amount);
+        this.currentMockUser.exp += Math.abs(amount) * 2;
+        this.currentMockUser.level = Math.floor(this.currentMockUser.exp / 250) + 1;
+        this.saveToStorage();
+        return this.currentMockUser.coins;
+      }
+      return 0;
+    }
+
     user.coins = Math.max(0, user.coins + amount);
     user.exp += Math.abs(amount) * 2;
     user.level = Math.floor(user.exp / 250) + 1;
@@ -405,6 +530,39 @@ class DataAdapter {
 
   // Shop & Inventory
   public async buyShopItem(userId: string, itemId: string, price: number): Promise<{ success: boolean; remainingCoins: number; error?: string }> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('coins')
+          .eq('id', userId)
+          .single();
+
+        if (!profile) return { success: false, remainingCoins: 0, error: 'Người dùng không tồn tại' };
+
+        if (profile.coins < price) {
+          return { success: false, remainingCoins: profile.coins, error: 'Không đủ xu để mua vật phẩm này' };
+        }
+
+        const rem = profile.coins - price;
+        await supabase.from('profiles').update({ coins: rem }).eq('id', userId);
+        await supabase.from('user_inventory').insert({
+          user_id: userId,
+          item_id: itemId,
+          item_type: itemId.split('-')[1] || 'skin',
+          is_equipped: true,
+        });
+
+        if (this.currentMockUser && this.currentMockUser.id === userId) {
+          this.currentMockUser.coins = rem;
+          this.saveToStorage();
+        }
+        return { success: true, remainingCoins: rem };
+      } catch (err: unknown) {
+        return { success: false, remainingCoins: 0, error: (err as Error).message };
+      }
+    }
+
     const user = this.mockUsers.find((u) => u.id === userId);
     if (!user) return { success: false, remainingCoins: 0, error: 'Người dùng không tồn tại' };
 
@@ -428,6 +586,14 @@ class DataAdapter {
   }
 
   public async getUserInventory(userId: string): Promise<UserInventoryItem[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data } = await supabase.from('user_inventory').select('*').eq('user_id', userId);
+        if (data) return data as UserInventoryItem[];
+      } catch {
+        // Fallback
+      }
+    }
     return this.mockInventory.filter((i) => i.user_id === userId);
   }
 }

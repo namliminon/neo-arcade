@@ -6,13 +6,13 @@ import { VirtualDPad } from "./VirtualDPad";
 import { soundSynth } from "@/lib/audio/sound-synth";
 import { useAuth } from "@/lib/store/auth-context";
 import { dataAdapter } from "@/lib/store/data-adapter";
-import { Play, RotateCcw, Trophy, Award, Sparkles } from "lucide-react";
+import { Play, RotateCcw, Trophy, Award, Sparkles, Lock } from "lucide-react";
 import { MagneticButton } from "@/components/motion/MagneticButton";
 
 const GRID_SIZE = 20;
 
 export function SnakeGame() {
-  const { user, addCoins } = useAuth();
+  const { user, addCoins, openAuthModal } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [snake, setSnake] = useState<Point[]>([
@@ -120,11 +120,12 @@ export function SnakeGame() {
           soundSynth.play("lose");
           setGameState("gameover");
 
-          // Save high score
+          // Save high score only if logged in
           setScore((finalScore) => {
             if (finalScore > highScore) setHighScore(finalScore);
             if (user) {
-              dataAdapter.submitScore(user.id, user.username, "snake", finalScore);
+              const displayName = user.nickname || user.username;
+              dataAdapter.submitScore(user.id, displayName, "snake", finalScore);
             }
             return finalScore;
           });
@@ -278,10 +279,31 @@ export function SnakeGame() {
                 <div className="text-3xl font-black text-rose-500 mb-1 tracking-wider animate-bounce">
                   GAME OVER
                 </div>
-                <p className="text-xs text-zinc-400 mb-4">
+                <p className="text-xs text-zinc-400 mb-3">
                   Bạn đạt được <span className="text-cyan-300 font-bold">{score}</span> điểm và kiếm được{" "}
                   <span className="text-amber-300 font-bold">+{coinsEarned} xu</span>!
                 </p>
+
+                {user ? (
+                  <div className="mb-4 inline-flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-xl">
+                    <Trophy className="h-3.5 w-3.5" />
+                    <span>Đã ghi danh nickname <b>{user.nickname || user.username}</b> lên BXH!</span>
+                  </div>
+                ) : (
+                  <div className="mb-4 max-w-xs flex flex-col items-center gap-1 rounded-xl bg-amber-500/10 border border-amber-500/30 p-2.5 text-[11px] text-amber-300">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <Lock className="h-3.5 w-3.5 text-amber-400" />
+                      Chưa đăng nhập: Điểm không được lên BXH
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openAuthModal("register")}
+                      className="underline text-amber-200 hover:text-white font-semibold cursor-pointer"
+                    >
+                      Đăng nhập / Đặt nickname để leo Top
+                    </button>
+                  </div>
+                )}
                 <MagneticButton
                   onClick={startGame}
                   className="rounded-xl bg-gradient-to-r from-cyan-500 to-violet-600 px-6 py-2.5 text-sm font-bold text-white shadow-[0_0_20px_rgba(6,182,212,0.3)] hover:opacity-95"

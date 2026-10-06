@@ -8,8 +8,9 @@ import { EmojiReactions } from "../realtime/EmojiReactions";
 import { soundSynth } from "@/lib/audio/sound-synth";
 import { useAuth } from "@/lib/store/auth-context";
 import { dataAdapter } from "@/lib/store/data-adapter";
-import { Trophy, Swords, RotateCcw, Copy, Check, ArrowLeft } from "lucide-react";
+import { Trophy, Swords, RotateCcw, Copy, Check, ArrowLeft, Radio } from "lucide-react";
 import { MagneticButton } from "@/components/motion/MagneticButton";
+import { createRoomChannel, RoomChannelHandler } from "@/lib/realtime/room-channel";
 
 interface FloatingEmoji {
   id: string;
@@ -36,9 +37,10 @@ export function RpsGame() {
   // Online Realtime
   const [isHost, setIsHost] = useState(false);
   const [opponentJoined, setOpponentJoined] = useState(false);
+  const [opponentName, setOpponentName] = useState<string>("Đang đợi...");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
-  const channelRef = useRef<BroadcastChannel | null>(null);
+  const channelRef = useRef<RoomChannelHandler | null>(null);
 
   // Copy PIN helper
   const handleCopyPin = () => {
@@ -49,52 +51,82 @@ export function RpsGame() {
     }
   };
 
-  // Setup Realtime Broadcast channel
+  // Setup Realtime Cloud / Broadcast channel
   useEffect(() => {
     if (mode !== "online" || !roomPin) return;
 
-    const channelName = `neo_arcade_rps_${roomPin}`;
-    const channel = new BroadcastChannel(channelName);
+    const channel = createRoomChannel(`rps_${roomPin}`);
     channelRef.current = channel;
 
-    channel.onmessage = (event) => {
-      const data = event.data;
-      if (!data) return;
+    const myName = user?.nickname || user?.username || (isHost ? "Chủ phòng" : "Khách");
 
-      if (data.type === "JOIN") {
-        setOpponentJoined(true);
-        soundSynth.play("jump");
-        channel.postMessage({ type: "ACK_JOIN" });
-      } else if (data.type === "ACK_JOIN") {
-        setOpponentJoined(true);
-      } else if (data.type === "MOVE") {
-        setP2Move(data.move);
-      } else if (data.type === "CHAT") {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-${Date.now()}`,
-            sender: data.sender,
-            text: data.text,
-            isSelf: false,
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          },
-        ]);
-      } else if (data.type === "EMOJI") {
-        triggerFloatingEmoji(data.emoji);
-      } else if (data.type === "RESET") {
-        resetRound();
+    channel.on("JOIN", (payload: any) => {
+      setOpponentJoined(true);
+      if (payload?.username) setOpponentName(payload.username);
+      soundSynth.play("jump");
+      channel.send("ACK_JOIN", { username: myName });
+    });
+
+    channel.on("ACK_JOIN", (payload: any) => {
+      setOpponentJoined(true);
+      if (payload?.username) setOpponentName(payload.username);
+    });
+
+    channel.on("MOVE", (payload: any) => {
+      if (!payload) return;
+      if (payload.role === "host") {
+        setP1Move(payload.move);
+      } else if (payload.role === "guest") {
+        setP2Move(payload.move);
       }
-    };
+    });
 
+    channel.on("CHAT", (payload: any) => {
+      if (!payload) return;
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-${Date.now()}-${Math.random()}`,
+          sender: payload.sender || "Đối thủ",
+          text: payload.text,
+          isSelf: false,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        },
+      ]);
+    });
+
+    channel.on("EMOJI", (payload: any) => {
+      if (payload?.emoji) {
+        triggerFloatingEmoji(payload.emoji);
+      }
+    });
+
+    channel.on("RESET", () => {
+      setP1Move(null);
+      setP2Move(null);
+      setRoundResult(null);
+      setTurn("p1");
+    });
+
+    // If joining as guest, periodically broadcast JOIN until acknowledged
+    let retryInterval: NodeJS.Timeout | null = null;
     if (!isHost) {
-      channel.postMessage({ type: "JOIN" });
+      let attempts = 0;
+      retryInterval = setInterval(() => {
+        attempts++;
+        channel.send("JOIN", { username: myName });
+        if (attempts > 12) {
+          if (retryInterval) clearInterval(retryInterval);
+        }
+      }, 1200);
+      channel.send("JOIN", { username: myName });
     }
 
     return () => {
+      if (retryInterval) clearInterval(retryInterval);
       channel.close();
     };
-  }, [mode, roomPin, isHost]);
+  }, [mode, roomPin, isHost, user]);
 
   // Round resolution
   useEffect(() => {
@@ -105,14 +137,26 @@ export function RpsGame() {
 
       if (res === "p1") {
         setP1Score((s) => s + 1);
-        soundSynth.play("win");
-        if (user) {
-          addCoins(2);
-          dataAdapter.submitScore(user.id, user.username, "rps", p1Score + 1);
+        if (mode === "local" || isHost) {
+          soundSynth.play("win");
+          if (user) {
+            addCoins(2);
+            dataAdapter.submitScore(user.id, user.nickname || user.username, "rps", p1Score + 1);
+          }
+        } else {
+          soundSynth.play("lose");
         }
       } else if (res === "p2") {
         setP2Score((s) => s + 1);
-        soundSynth.play("lose");
+        if (mode === "local" || !isHost) {
+          soundSynth.play("win");
+          if (user) {
+            addCoins(2);
+            dataAdapter.submitScore(user.id, user.nickname || user.username, "rps", p2Score + 1);
+          }
+        } else {
+          soundSynth.play("lose");
+        }
       }
     }
   }, [p1Move, p2Move]);
@@ -131,21 +175,21 @@ export function RpsGame() {
 
   const handleSendEmoji = (emoji: string) => {
     triggerFloatingEmoji(emoji);
-    channelRef.current?.postMessage({ type: "EMOJI", emoji });
+    channelRef.current?.send("EMOJI", { emoji });
   };
 
   const handleSendMessage = (text: string) => {
+    const sender = user?.nickname || user?.username || (isHost ? "Chủ phòng" : "Khách");
     const newMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
-      sender: user?.username || "Tôi",
+      sender: `${sender} (Tôi)`,
       text,
       isSelf: true,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
     setChatMessages((prev) => [...prev, newMsg]);
-    channelRef.current?.postMessage({
-      type: "CHAT",
-      sender: user?.username || "Đối thủ",
+    channelRef.current?.send("CHAT", {
+      sender,
       text,
     });
   };
@@ -161,8 +205,13 @@ export function RpsGame() {
       }
     } else {
       // Online mode
-      setP1Move(move);
-      channelRef.current?.postMessage({ type: "MOVE", move });
+      if (isHost) {
+        setP1Move(move);
+        channelRef.current?.send("MOVE", { role: "host", move });
+      } else {
+        setP2Move(move);
+        channelRef.current?.send("MOVE", { role: "guest", move });
+      }
     }
   };
 
@@ -171,7 +220,9 @@ export function RpsGame() {
     setP2Move(null);
     setRoundResult(null);
     setTurn("p1");
-    channelRef.current?.postMessage({ type: "RESET" });
+    if (mode === "online") {
+      channelRef.current?.send("RESET", {});
+    }
   };
 
   // Start online host
@@ -180,6 +231,10 @@ export function RpsGame() {
     setRoomPin(code);
     setIsHost(true);
     setOpponentJoined(false);
+    setOpponentName("Đang đợi người vào...");
+    setP1Score(0);
+    setP2Score(0);
+    resetRound();
     setMode("online");
   };
 
@@ -187,7 +242,11 @@ export function RpsGame() {
   const handleJoinRoom = (pin: string) => {
     setRoomPin(pin);
     setIsHost(false);
-    setOpponentJoined(true);
+    setOpponentJoined(false);
+    setOpponentName("Đang kết nối chủ phòng...");
+    setP1Score(0);
+    setP2Score(0);
+    resetRound();
     setMode("online");
   };
 
@@ -206,6 +265,13 @@ export function RpsGame() {
       />
     );
   }
+
+  // Determine what moves are selected for display
+  const myCurrentMove = mode === "local" ? null : isHost ? p1Move : p2Move;
+  const oppCurrentMove = mode === "local" ? null : isHost ? p2Move : p1Move;
+  const myPlayerLabel = isHost
+    ? user?.nickname || user?.username || "Chủ Phòng (P1)"
+    : user?.nickname || user?.username || "Bạn (P2)";
 
   return (
     <div className="max-w-xl mx-auto w-full space-y-4">
@@ -226,15 +292,22 @@ export function RpsGame() {
           Đổi Chế Độ
         </button>
 
-        <div className="text-xs font-semibold text-zinc-300">
-          {mode === "local" ? "🕹️ 2 Người Cùng Máy" : `🌐 Phòng: ${roomPin}`}
+        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+          {mode === "local" ? (
+            "🕹️ 2 Người Cùng Máy"
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <Radio className={`h-3 w-3 ${opponentJoined ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} />
+              <span>Phòng: <span className="font-mono text-cyan-300 font-bold">{roomPin}</span></span>
+            </div>
+          )}
         </div>
 
         {mode === "online" && (
           <button
             type="button"
             onClick={handleCopyPin}
-            className="flex items-center gap-1 text-[11px] font-mono text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded-lg border border-cyan-500/20"
+            className="flex items-center gap-1 text-[11px] font-mono text-cyan-300 bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/20 hover:bg-cyan-500/20 transition-colors"
           >
             {copiedPin ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
             {copiedPin ? "Đã copy!" : "Copy PIN"}
@@ -245,8 +318,8 @@ export function RpsGame() {
       {/* Scoreboard */}
       <div className="grid grid-cols-3 items-center rounded-2xl border border-white/[0.08] bg-[#121217]/90 p-4 text-center">
         <div>
-          <div className="text-xs font-bold text-cyan-400">
-            {mode === "local" ? "Người Chơi 1" : user?.username || "Bạn"}
+          <div className="text-xs font-bold text-cyan-400 truncate px-1">
+            {mode === "local" ? "Người Chơi 1" : isHost ? myPlayerLabel : opponentName}
           </div>
           <div className="text-3xl font-black text-white font-mono mt-1">{p1Score}</div>
         </div>
@@ -259,8 +332,14 @@ export function RpsGame() {
         </div>
 
         <div>
-          <div className="text-xs font-bold text-violet-400">
-            {mode === "local" ? "Người Chơi 2" : opponentJoined ? "Đối Thủ" : "Đang Đợi..."}
+          <div className="text-xs font-bold text-violet-400 truncate px-1">
+            {mode === "local"
+              ? "Người Chơi 2"
+              : isHost
+              ? opponentJoined
+                ? opponentName
+                : "Đang Đợi..."
+              : myPlayerLabel}
           </div>
           <div className="text-3xl font-black text-white font-mono mt-1">{p2Score}</div>
         </div>
@@ -286,10 +365,11 @@ export function RpsGame() {
             <div className="text-2xl font-black">
               {roundResult === "draw" ? (
                 <span className="text-amber-400">HÒA NHAU!</span>
-              ) : roundResult === "p1" ? (
-                <span className="text-cyan-400">{mode === "local" ? "NGƯỜI CHƠI 1 THẮNG! 🎉" : "BẠN CHIẾN THẮNG! 🏆"}</span>
+              ) : (roundResult === "p1" && (mode === "local" || isHost)) ||
+                (roundResult === "p2" && mode === "online" && !isHost) ? (
+                <span className="text-cyan-400">BẠN CHIẾN THẮNG! 🏆 (+2 Coins)</span>
               ) : (
-                <span className="text-violet-400">{mode === "local" ? "NGƯỜI CHƠI 2 THẮNG! 🎉" : "ĐỐI THỦ THẮNG! 💥"}</span>
+                <span className="text-violet-400">ĐỐI THỦ THẮNG! 💥</span>
               )}
             </div>
 
@@ -303,30 +383,48 @@ export function RpsGame() {
           </div>
         ) : (
           <div>
+            {mode === "online" && !opponentJoined && (
+              <div className="mb-4 inline-flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 text-xs text-amber-300">
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+                Đang chờ đối thủ nhập mã phòng <span className="font-mono font-bold text-white">{roomPin}</span> để vào trận...
+              </div>
+            )}
+
             <div className="text-xs font-semibold text-zinc-400 mb-2">
               {mode === "local"
                 ? turn === "p1"
                   ? "👉 Lượt Người Chơi 1 Chọn (P2 quay mặt đi):"
                   : "👉 Lượt Người Chơi 2 Chọn:"
-                : p1Move
-                ? "⏳ Đã chọn! Đang đợi đối thủ ra quyết định..."
+                : myCurrentMove
+                ? oppCurrentMove
+                  ? "Đang tính kết quả..."
+                  : "⏳ Bạn đã chọn! Đang chờ đối thủ ra quyết định..."
+                : oppCurrentMove
+                ? "⚡ Đối thủ ĐÃ CHỌN! Đến lượt bạn hãy chọn ngay:"
                 : "👉 Hãy chọn Kéo, Búa hoặc Bao:"}
             </div>
 
             {/* Move Buttons */}
-            {(!p1Move || (mode === "local" && !p2Move)) && (
+            {((mode === "local" && (!p1Move || !p2Move)) || (mode === "online" && !myCurrentMove)) && (
               <div className="flex items-center justify-center gap-4 mt-6">
                 {(["rock", "paper", "scissors"] as RpsMove[]).map((move) => (
                   <MagneticButton
                     key={move}
                     type="button"
                     onClick={() => handleSelectMove(move)}
-                    className="flex flex-col items-center justify-center h-24 w-24 rounded-2xl border border-white/10 bg-white/[0.04] hover:border-cyan-500/50 hover:bg-cyan-500/10 active:scale-95 transition-all shadow-[0_0_20px_rgba(0,0,0,0.5)]"
+                    className="flex flex-col items-center justify-center h-24 w-24 rounded-2xl border border-white/10 bg-white/[0.04] hover:border-cyan-500/50 hover:bg-cyan-500/10 active:scale-95 transition-all shadow-[0_0_20px_rgba(0,0,0,0.5)] cursor-pointer"
                   >
                     <span className="text-4xl">{RPS_MOVE_ICONS[move].emoji}</span>
                     <span className="text-xs font-bold text-white mt-2">{RPS_MOVE_ICONS[move].label}</span>
                   </MagneticButton>
                 ))}
+              </div>
+            )}
+
+            {mode === "online" && myCurrentMove && !oppCurrentMove && (
+              <div className="mt-6 flex flex-col items-center gap-2">
+                <span className="text-4xl">{RPS_MOVE_ICONS[myCurrentMove].emoji}</span>
+                <span className="text-xs text-zinc-500">Lựa chọn của bạn đã được khóa lại bí mật</span>
               </div>
             )}
           </div>

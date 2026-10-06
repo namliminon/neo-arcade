@@ -8,8 +8,9 @@ import { EmojiReactions } from "../realtime/EmojiReactions";
 import { soundSynth } from "@/lib/audio/sound-synth";
 import { useAuth } from "@/lib/store/auth-context";
 import { dataAdapter } from "@/lib/store/data-adapter";
-import { RotateCcw, Copy, Check, ArrowLeft, Trophy } from "lucide-react";
+import { RotateCcw, Copy, Check, ArrowLeft, Radio } from "lucide-react";
 import { MagneticButton } from "@/components/motion/MagneticButton";
+import { createRoomChannel, RoomChannelHandler } from "@/lib/realtime/room-channel";
 
 interface FloatingEmoji {
   id: string;
@@ -34,9 +35,10 @@ export function TicTacToeGame() {
   // Online
   const [mySymbol, setMySymbol] = useState<"X" | "O">("X");
   const [opponentJoined, setOpponentJoined] = useState(false);
+  const [opponentName, setOpponentName] = useState("Đang đợi đối thủ...");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
-  const channelRef = useRef<BroadcastChannel | null>(null);
+  const channelRef = useRef<RoomChannelHandler | null>(null);
 
   const handleCopyPin = () => {
     if (typeof navigator !== "undefined") {
@@ -50,47 +52,71 @@ export function TicTacToeGame() {
   useEffect(() => {
     if (mode !== "online" || !roomPin) return;
 
-    const channel = new BroadcastChannel(`neo_arcade_ttt_${roomPin}`);
+    const channel = createRoomChannel(`ttt_${roomPin}`);
     channelRef.current = channel;
 
-    channel.onmessage = (event) => {
-      const data = event.data;
-      if (!data) return;
+    const myName = user?.nickname || user?.username || (mySymbol === "X" ? "Chủ phòng (X)" : "Khách (O)");
 
-      if (data.type === "JOIN") {
-        setOpponentJoined(true);
-        soundSynth.play("jump");
-        channel.postMessage({ type: "ACK_JOIN" });
-      } else if (data.type === "ACK_JOIN") {
-        setOpponentJoined(true);
-      } else if (data.type === "MOVE") {
-        handleMove(data.index, data.symbol, false);
-      } else if (data.type === "CHAT") {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-${Date.now()}`,
-            sender: data.sender,
-            text: data.text,
-            isSelf: false,
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          },
-        ]);
-      } else if (data.type === "EMOJI") {
-        triggerFloatingEmoji(data.emoji);
-      } else if (data.type === "RESET") {
-        resetBoard(false);
+    channel.on("JOIN", (payload: any) => {
+      setOpponentJoined(true);
+      if (payload?.username) setOpponentName(payload.username);
+      soundSynth.play("jump");
+      channel.send("ACK_JOIN", { username: myName });
+    });
+
+    channel.on("ACK_JOIN", (payload: any) => {
+      setOpponentJoined(true);
+      if (payload?.username) setOpponentName(payload.username);
+    });
+
+    channel.on("MOVE", (payload: any) => {
+      if (!payload) return;
+      handleMove(payload.index, payload.symbol, false);
+    });
+
+    channel.on("CHAT", (payload: any) => {
+      if (!payload) return;
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-${Date.now()}-${Math.random()}`,
+          sender: payload.sender || "Đối thủ",
+          text: payload.text,
+          isSelf: false,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        },
+      ]);
+    });
+
+    channel.on("EMOJI", (payload: any) => {
+      if (payload?.emoji) {
+        triggerFloatingEmoji(payload.emoji);
       }
-    };
+    });
 
+    channel.on("RESET", () => {
+      resetBoard(false);
+    });
+
+    // If O (Guest), retry JOIN every 1.2s until connected
+    let retryInterval: NodeJS.Timeout | null = null;
     if (mySymbol === "O") {
-      channel.postMessage({ type: "JOIN" });
+      let attempts = 0;
+      retryInterval = setInterval(() => {
+        attempts++;
+        channel.send("JOIN", { username: myName });
+        if (attempts > 12) {
+          if (retryInterval) clearInterval(retryInterval);
+        }
+      }, 1200);
+      channel.send("JOIN", { username: myName });
     }
 
     return () => {
+      if (retryInterval) clearInterval(retryInterval);
       channel.close();
     };
-  }, [mode, roomPin, mySymbol]);
+  }, [mode, roomPin, mySymbol, user]);
 
   const triggerFloatingEmoji = (emoji: string) => {
     const newEmoji: FloatingEmoji = {
@@ -106,21 +132,21 @@ export function TicTacToeGame() {
 
   const handleSendEmoji = (emoji: string) => {
     triggerFloatingEmoji(emoji);
-    channelRef.current?.postMessage({ type: "EMOJI", emoji });
+    channelRef.current?.send("EMOJI", { emoji });
   };
 
   const handleSendMessage = (text: string) => {
+    const sender = user?.nickname || user?.username || (mySymbol === "X" ? "Chủ phòng" : "Khách");
     const newMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
-      sender: user?.username || "Tôi",
+      sender: `${sender} (Tôi)`,
       text,
       isSelf: true,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
     setChatMessages((prev) => [...prev, newMsg]);
-    channelRef.current?.postMessage({
-      type: "CHAT",
-      sender: user?.username || "Đối thủ",
+    channelRef.current?.send("CHAT", {
+      sender,
       text,
     });
   };
@@ -135,7 +161,7 @@ export function TicTacToeGame() {
     setBoard(newBoard);
 
     if (broadcast && mode === "online") {
-      channelRef.current?.postMessage({ type: "MOVE", index, symbol });
+      channelRef.current?.send("MOVE", { index, symbol });
     }
 
     const result = checkTicTacToeWinner(newBoard);
@@ -146,14 +172,14 @@ export function TicTacToeGame() {
         soundSynth.play("win");
         if (user && (mode === "local" || mySymbol === "X")) {
           addCoins(3);
-          dataAdapter.submitScore(user.id, user.username, "tictactoe", xScore + 1);
+          dataAdapter.submitScore(user.id, user.nickname || user.username, "tictactoe", xScore + 1);
         }
       } else if (result.winner === "O") {
         setOScore((s) => s + 1);
         soundSynth.play("win");
-        if (user && mySymbol === "O") {
+        if (user && (mode === "local" || mySymbol === "O")) {
           addCoins(3);
-          dataAdapter.submitScore(user.id, user.username, "tictactoe", oScore + 1);
+          dataAdapter.submitScore(user.id, user.nickname || user.username, "tictactoe", oScore + 1);
         }
       } else {
         soundSynth.play("lose");
@@ -168,7 +194,7 @@ export function TicTacToeGame() {
     setTurn("X");
     setWinResult(null);
     if (broadcast && mode === "online") {
-      channelRef.current?.postMessage({ type: "RESET" });
+      channelRef.current?.send("RESET", {});
     }
   };
 
@@ -177,13 +203,21 @@ export function TicTacToeGame() {
     setRoomPin(code);
     setMySymbol("X");
     setOpponentJoined(false);
+    setOpponentName("Đang chờ người vào...");
+    setXScore(0);
+    setOScore(0);
+    resetBoard(false);
     setMode("online");
   };
 
   const handleJoinRoom = (pin: string) => {
     setRoomPin(pin);
     setMySymbol("O");
-    setOpponentJoined(true);
+    setOpponentJoined(false);
+    setOpponentName("Đang kết nối chủ phòng...");
+    setXScore(0);
+    setOScore(0);
+    resetBoard(false);
     setMode("online");
   };
 
@@ -223,15 +257,22 @@ export function TicTacToeGame() {
           Đổi Chế Độ
         </button>
 
-        <div className="text-xs font-semibold text-zinc-300">
-          {mode === "local" ? "🕹️ 2 Người Cùng Máy" : `🌐 Bạn là '${mySymbol}' • Phòng: ${roomPin}`}
+        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+          {mode === "local" ? (
+            "🕹️ 2 Người Cùng Máy"
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <Radio className={`h-3 w-3 ${opponentJoined ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} />
+              <span>Quân {mySymbol} • Phòng: <span className="font-mono text-cyan-300 font-bold">{roomPin}</span></span>
+            </div>
+          )}
         </div>
 
         {mode === "online" && (
           <button
             type="button"
             onClick={handleCopyPin}
-            className="flex items-center gap-1 text-[11px] font-mono text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded-lg border border-cyan-500/20"
+            className="flex items-center gap-1 text-[11px] font-mono text-cyan-300 bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/20 hover:bg-cyan-500/20"
           >
             {copiedPin ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
             {copiedPin ? "Đã copy!" : "Copy PIN"}
@@ -242,23 +283,34 @@ export function TicTacToeGame() {
       {/* Scoreboard */}
       <div className="grid grid-cols-2 items-center rounded-2xl border border-white/[0.08] bg-[#121217]/90 p-4 text-center">
         <div className={`p-2 rounded-xl transition-all ${turn === "X" && !winResult ? "bg-cyan-500/10 border border-cyan-500/30" : ""}`}>
-          <div className="text-xs font-bold text-cyan-400">Quân X</div>
+          <div className="text-xs font-bold text-cyan-400 truncate px-1">
+            {mode === "local" ? "Quân X (P1)" : mySymbol === "X" ? `${user?.nickname || user?.username || "Bạn"} (X)` : `${opponentName} (X)`}
+          </div>
           <div className="text-2xl font-black text-white font-mono mt-0.5">{xScore}</div>
         </div>
         <div className={`p-2 rounded-xl transition-all ${turn === "O" && !winResult ? "bg-pink-500/10 border border-pink-500/30" : ""}`}>
-          <div className="text-xs font-bold text-pink-400">Quân O</div>
+          <div className="text-xs font-bold text-pink-400 truncate px-1">
+            {mode === "local" ? "Quân O (P2)" : mySymbol === "O" ? `${user?.nickname || user?.username || "Bạn"} (O)` : `${opponentName} (O)`}
+          </div>
           <div className="text-2xl font-black text-white font-mono mt-0.5">{oScore}</div>
         </div>
       </div>
 
       {/* Status banner */}
       <div className="text-center text-xs font-medium">
+        {mode === "online" && !opponentJoined && (
+          <div className="mb-2 inline-flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 text-xs text-amber-300">
+            <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+            Đang chờ đối thủ nhập mã phòng <span className="font-mono font-bold text-white">{roomPin}</span>...
+          </div>
+        )}
+
         {winResult ? (
           winResult.winner === "draw" ? (
             <span className="text-amber-400 font-bold text-sm">HÒA CỜ! 🤝</span>
           ) : (
             <span className="text-emerald-400 font-bold text-sm">
-              🏆 QUÂN {winResult.winner} CHIẾN THẮNG!
+              🏆 QUÂN {winResult.winner} CHIẾN THẮNG! {mode === "online" && winResult.winner === mySymbol && "(+3 Coins)"}
             </span>
           )
         ) : (
@@ -283,7 +335,7 @@ export function TicTacToeGame() {
               disabled={Boolean(cell) || Boolean(winResult) || !isMyTurn}
               onClick={() => handleMove(idx, turn)}
               className={`h-24 sm:h-28 rounded-xl border border-white/[0.08] bg-white/[0.02] flex items-center justify-center text-5xl font-black select-none transition-all ${
-                !cell && isMyTurn && !winResult ? "hover:bg-white/[0.06] hover:border-cyan-500/30 active:scale-95" : ""
+                !cell && isMyTurn && !winResult ? "hover:bg-white/[0.06] hover:border-cyan-500/30 active:scale-95 cursor-pointer" : "cursor-default"
               } ${
                 isWinningCell
                   ? cell === "X"
